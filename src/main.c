@@ -29,6 +29,8 @@
 #include "esp_eth.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
+#include "driver/rmt_tx.h"
+#include "soc/soc_caps.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 
@@ -112,6 +114,8 @@ void bridge_w5500_rx_stats(uint32_t *reads, uint32_t *frames, int64_t *spi_us, i
 // doesn't take the bridge off WiFi.
 #define WPS_HOLD_MS 3000
 #define WPS_WAIT_MS (150 * 1000)  // the router's push-button window is 2 minutes
+#define WPS_RESULT_MS 3000        // how long the LED shows the result
+#define WPS_LED_LEVEL 32          // of 255: a WS2812 at full power is uncomfortably bright
 #define NVS_NAMESPACE "bridge"
 
 static const char *TAG = "bridge";
@@ -397,6 +401,44 @@ static void leds_init(void)
     ESP_ERROR_CHECK(esp_timer_start_periodic(timer, LED_TICK_MS * 1000));
 }
 
+// WS2812 RGB LED showing WPS progress. Only ctrl_task sets it: RMT calls on
+// one channel aren't thread-safe.
+static rmt_channel_handle_t s_wps_led;
+static rmt_encoder_handle_t s_wps_led_enc;
+
+static void wps_led_set(uint8_t r, uint8_t g, uint8_t b)
+{
+    if (!s_wps_led) return;
+    const uint8_t grb[3] = {g, r, b};
+    const rmt_transmit_config_t tx = {0};
+    if (rmt_transmit(s_wps_led, s_wps_led_enc, grb, sizeof(grb), &tx) == ESP_OK) {
+        rmt_tx_wait_all_done(s_wps_led, 100);  // RMT reads grb while it sends
+    }
+}
+
+static void wps_led_init(void)
+{
+    if (CONFIG_BRIDGE_PIN_WPS_LED < 0) return;
+    rmt_tx_channel_config_t chan = {
+        .gpio_num = CONFIG_BRIDGE_PIN_WPS_LED,
+        .clk_src = RMT_CLK_SRC_DEFAULT,
+        .resolution_hz = 10 * 1000 * 1000,  // 0.1 us per tick
+        .mem_block_symbols = SOC_RMT_MEM_WORDS_PER_CHANNEL,  // holds a whole LED update: no refill interrupts
+        .trans_queue_depth = 1,
+    };
+    rmt_bytes_encoder_config_t enc = {
+        .bit0 = {.level0 = 1, .duration0 = 3, .level1 = 0, .duration1 = 9},
+        .bit1 = {.level0 = 1, .duration0 = 9, .level1 = 0, .duration1 = 3},
+        .flags.msb_first = 1,
+    };
+    rmt_channel_handle_t handle;
+    ESP_ERROR_CHECK(rmt_new_tx_channel(&chan, &handle));
+    ESP_ERROR_CHECK(rmt_new_bytes_encoder(&enc, &s_wps_led_enc));
+    ESP_ERROR_CHECK(rmt_enable(handle));
+    s_wps_led = handle;
+    wps_led_set(0, 0, 0);
+}
+
 // Asks ctrl_task to run WPS once per press held WPS_HOLD_MS. Active low.
 static void button_task(void *arg)
 {
@@ -566,13 +608,18 @@ static void wps_run(void)
     esp_wifi_set_mac(WIFI_IF_STA, own);
     esp_wps_config_t cfg = WPS_CONFIG_INIT_DEFAULT(WPS_TYPE_PBC);
     bool started = esp_wifi_start() == ESP_OK && esp_wifi_wps_enable(&cfg) == ESP_OK && esp_wifi_wps_start(0) == ESP_OK;
-    for (int ms = 0; started && !s_wps_result && ms < WPS_WAIT_MS; ms += 100) vTaskDelay(pdMS_TO_TICKS(100));
+    for (int ms = 0; started && !s_wps_result && ms < WPS_WAIT_MS; ms += 100) {
+        wps_led_set(0, 0, ms % 200 == 0 ? WPS_LED_LEVEL : 0);  // rapid flash, like Bluetooth pairing
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
     esp_wifi_wps_disable();
     esp_wifi_stop();
     s_wps_active = false;
 
+    bool stored = false;
     if (s_wps_result == WIFI_EVENT_STA_WPS_ER_SUCCESS && s_wps_cfg.sta.ssid[0]) {
         esp_err_t err = creds_save(&s_wps_cfg);
+        stored = err == ESP_OK;
         memcpy(s_wifi_cfg.sta.ssid, s_wps_cfg.sta.ssid, sizeof(s_wifi_cfg.sta.ssid));
         memcpy(s_wifi_cfg.sta.password, s_wps_cfg.sta.password, sizeof(s_wifi_cfg.sta.password));
         if (err == ESP_OK) ESP_LOGI(TAG, "WPS: got network \"%.32s\"", (char *)s_wifi_cfg.sta.ssid);
@@ -584,6 +631,10 @@ static void wps_run(void)
     }
     esp_wifi_set_config(WIFI_IF_STA, &s_wifi_cfg);  // WPS may have replaced it
     if (had_mac && s_wifi_cfg.sta.ssid[0]) wifi_start_with_mac(mac);
+
+    wps_led_set(stored ? 0 : WPS_LED_LEVEL, stored ? WPS_LED_LEVEL : 0, 0);  // green: stored, red: failed
+    vTaskDelay(pdMS_TO_TICKS(WPS_RESULT_MS));
+    wps_led_set(0, 0, 0);
 }
 
 static bool lan_detected(int64_t now)
@@ -830,8 +881,9 @@ void app_main(void)
     xTaskCreate(eth2wifi_task, "eth2wifi", 4096, NULL, 15, NULL);
     xTaskCreate(wifi2eth_task, "wifi2eth", 4096, NULL, 15, NULL);
     xTaskCreate(stats_task, "stats", 4096, NULL, 1, NULL);
-    if (CONFIG_BRIDGE_PIN_WPS_BUTTON >= 0) xTaskCreate(button_task, "button", 2048, NULL, 5, NULL);
+    if (CONFIG_BRIDGE_PIN_WPS_BUTTON >= 0) xTaskCreate(button_task, "button", 4096, NULL, 5, NULL);
     leds_init();
+    wps_led_init();
 
     wifi_init();
     while (!eth_init()) vTaskDelay(pdMS_TO_TICKS(5000));

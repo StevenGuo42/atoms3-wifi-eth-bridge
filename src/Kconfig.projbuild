@@ -77,6 +77,13 @@ menu "WiFi bridge board"
             it takes precedence over wifi_credentials.h. With a button,
             wifi_credentials.h is optional.
 
+    config BRIDGE_PIN_WPS_LED
+        int "WPS status LED GPIO, WS2812 RGB (-1: none)"
+        default -1
+        help
+            Flashes blue rapidly while WPS waits for the router, then shows green (network
+            stored) or red (failed) for 3 s. Off the rest of the time.
+
     config BRIDGE_SPI_MHZ
         int "Ethernet chip SPI clock (MHz)"
         range 1 80

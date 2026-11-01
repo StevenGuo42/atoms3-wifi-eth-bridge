@@ -34,7 +34,7 @@ Generated, all gitignored: `sdkconfig.<env>`, `managed_components/`,
 
 | Env | Hardware | Docs |
 |-----|----------|------|
-| `atoms3-poe` (default) | M5Stack AtomS3 Lite + AtomPoE base (W5500; INT/RST not connected; WPS button GPIO41). This fork's board: bridges a receipt printer, on Windows | Pins from https://github.com/espressif/arduino-esp32/issues/9246, not yet verified on hardware |
+| `atoms3-poe` (default) | M5Stack AtomS3 Lite + AtomPoE base (W5500; INT/RST not connected; WPS button GPIO41, WPS LED GPIO35). This fork's board: bridges a receipt printer, on Windows | W5500 pins from https://github.com/espressif/arduino-esp32/issues/9246, not yet verified on hardware (the button and LED work) |
 | `esp32-s3-poe` | ESP32-S3 PoE W5500 N16R8 board | https://github.com/jeroenvermeulen/esp32-s3-poe-w5500-n16r8-dev-board |
 | `lolin-s2-mini` | LOLIN S2 Mini (ESP32-S2FN4R2) + USR-ES1 W5500 module on wires | https://github.com/jeroenvermeulen/esp32-w5500 |
 | `esp32-uno-shield` | ESP32-WROOM-32U + Arduino Uno Ethernet Shield (W5100) on wires | README "ESP32 + Arduino Ethernet Shield notes" |
@@ -70,6 +70,9 @@ On this fork's Windows machine `pio` isn't on PATH: use
 Full builds there often hit a GCC "internal compiler error: Segmentation
 fault" in ESP-IDF's `esp_lcd_panel_rgb.c` (not our code): rerun, with
 `-j 2` if it repeats; it got through on the second or third try.
+The boards without a WPS button need `src/wifi_credentials.h` to build. Adding or
+removing that file wiped `.pio/build` on 2026-11-01, so build the env you want
+to flash last.
 
 ## Testing on hardware
 

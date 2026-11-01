@@ -102,7 +102,8 @@ On `esp32-uno-shield` (WiFi at -43 dBm) the W5100's SPI is the limit: it moves o
    - **Password**: copy `src/wifi_credentials.example.h` to `src/wifi_credentials.h` and fill in
      your network. That file is gitignored. The password is compiled into the firmware.
    - **[fork] WPS** (boards with a WPS button, currently `atoms3-poe`): skip the file. After
-     flashing, hold the button 3 s and press WPS on the router within 2 minutes. The bridge
+     flashing, hold the button 3 s and press WPS on the router within 2 minutes (on `atoms3-poe`
+     the LED flashes blue rapidly while it waits, then shows green or red). The bridge
      stores the network in its flash (NVS) and keeps it across reboots and reflashes; repeat to
      change networks. The router must have WPS push-button enabled, which WPA3-only networks
      don't support.
@@ -149,6 +150,7 @@ top of [sdkconfig.defaults](sdkconfig.defaults). The bridge's own options are de
 | `CONFIG_BRIDGE_ETH_DUPLEX_HALF` / `_FULL` | Forced duplex. Must match the wired device: an autonegotiating device falls back to half duplex against a forced link. The Mac's USB adapter did, although macOS showed full duplex: forced full lost ~80% of the frames to it under two-way traffic, while single transfers looked fine. Forced half works, but sends often wait out the Mac's traffic (11% ping loss under load). Prefer autonegotiation. |
 | `CONFIG_BRIDGE_WIFI_MAX_TX_POWER` | In 0.25 dBm units, `0` for the chip default. |
 | `CONFIG_BRIDGE_PIN_WPS_BUTTON` | **[fork]** WPS button, active low; `-1` for none. With a button, `wifi_credentials.h` is optional. |
+| `CONFIG_BRIDGE_PIN_WPS_LED` | **[fork]** WS2812 RGB LED showing WPS progress; `-1` for none. Flashes blue rapidly while waiting for the router, then green (network stored) or red (failed) for 3 s. |
 
 ESP-IDF only applies defaults to a new configuration, so after editing a defaults file delete
 `sdkconfig.<environment>` (or change the option with `pio run -e <environment> -t menuconfig`).
@@ -167,14 +169,15 @@ too (untested).
 |---|---|---|---|---|---|---|
 | AtomS3 GPIO | 5 | 8 | 7 | 6 | not connected | not connected |
 
-- **The pins aren't verified on hardware yet.** They come from
+- **The W5500 pins aren't verified on hardware yet.** They come from
   [arduino-esp32#9246](https://github.com/espressif/arduino-esp32/issues/9246). The labels
   printed on the AtomPoE base are for the original (ESP32) Atom, not the AtomS3.
 - **No INT or RST**: the bridge polls the W5500 every 1 ms, and can't reset it.
 - **SPI runs at 20 MHz**: these aren't the IO_MUX pins of SPI2, which limits the clock to 26 MHz.
 - The link autonegotiates.
-- **The button on top is the WPS button** (GPIO41, not yet verified on hardware).
-  Hold it 3 s; the log shows "WPS: press the WPS button on the router".
+- **The button on top is the WPS button** (GPIO41).
+  Hold it 3 s; the RGB LED (GPIO35) flashes blue rapidly while it waits for the router, then shows green
+  (network stored) or red (failed) for 3 s.
 
 ### LOLIN S2 Mini notes
 

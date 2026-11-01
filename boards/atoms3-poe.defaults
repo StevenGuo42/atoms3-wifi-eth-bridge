@@ -15,5 +15,7 @@ CONFIG_BRIDGE_PIN_RST=-1
 
 CONFIG_BRIDGE_ETH_AUTONEGOTIATE=y
 
-# The button on top: GPIO41, not yet verified on hardware.
+# The button on top: GPIO41.
 CONFIG_BRIDGE_PIN_WPS_BUTTON=41
+# The RGB LED (WS2812), from PlatformIO's m5stack_atoms3 pin map.
+CONFIG_BRIDGE_PIN_WPS_LED=35
