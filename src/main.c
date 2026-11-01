@@ -80,8 +80,8 @@ void bridge_w5500_rx_stats(uint32_t *reads, uint32_t *frames, int64_t *spi_us, i
 // each queued frame holds one WiFi RX buffer (see sdkconfig.defaults).
 #define WIFI2ETH_QUEUE_LEN 64
 #define MAC_SWITCH_IDLE_US (10 * 1000 * 1000)  // old MAC must be silent this long before we re-clone
-#define DEVICE_IDLE_LEAVE_US (15 * 60 * 1000000LL)  // leave WiFi when the device is silent this long
-#define LINK_DOWN_LEAVE_US (10 * 1000 * 1000)     // or the Ethernet link is down this long
+// No idle timeout: a receipt printer stays silent until a job arrives, so only an unplugged link leaves WiFi.
+#define LINK_DOWN_LEAVE_US (10 * 1000 * 1000)     // leave WiFi when the Ethernet link is down this long
 // Watch the port this long before cloning a new MAC, so a network has time to
 // show more sources: the first frame on a LAN came from its router.
 #define CLONE_SETTLE_MS 3000
@@ -489,10 +489,8 @@ static void ctrl_task(void *arg)
             lan_logged = false;
         }
         if (s_have_mac) {
-            bool idle = now - s_clone_last_seen_us > DEVICE_IDLE_LEAVE_US;
-            bool link_down = !s_eth_up && now - s_eth_down_us > LINK_DOWN_LEAVE_US;
-            if (idle || link_down) {
-                ESP_LOGW(TAG, "Wired device %s, leaving WiFi", idle ? "silent for 15 minutes" : "unplugged");
+            if (!s_eth_up && now - s_eth_down_us > LINK_DOWN_LEAVE_US) {
+                ESP_LOGW(TAG, "Wired device unplugged, leaving WiFi");
                 wifi_leave();
             }
         }

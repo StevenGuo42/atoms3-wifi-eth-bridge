@@ -34,7 +34,8 @@ Generated, all gitignored: `sdkconfig.<env>`, `managed_components/`,
 
 | Env | Hardware | Docs |
 |-----|----------|------|
-| `esp32-s3-poe` (default) | ESP32-S3 PoE W5500 N16R8 board | https://github.com/jeroenvermeulen/esp32-s3-poe-w5500-n16r8-dev-board |
+| `atoms3-poe` (default) | M5Stack AtomS3 + AtomPoE base (W5500; INT/RST not connected). This fork's board: bridges a receipt printer, on Windows | Pins from https://github.com/espressif/arduino-esp32/issues/9246, not yet verified on hardware |
+| `esp32-s3-poe` | ESP32-S3 PoE W5500 N16R8 board | https://github.com/jeroenvermeulen/esp32-s3-poe-w5500-n16r8-dev-board |
 | `lolin-s2-mini` | LOLIN S2 Mini (ESP32-S2FN4R2) + USR-ES1 W5500 module on wires | https://github.com/jeroenvermeulen/esp32-w5500 |
 | `esp32-uno-shield` | ESP32-WROOM-32U + Arduino Uno Ethernet Shield (W5100) on wires | README "ESP32 + Arduino Ethernet Shield notes" |
 | `esp32-w5500` | ESP32-WROOM-32U + USR-ES1 W5500 module on wires (the user's permanent bridge) | README "ESP32 + W5500 module notes" |
@@ -53,6 +54,7 @@ ignored.
 ## Build and verify
 
 ```sh
+pio run -e atoms3-poe
 pio run -e esp32-s3-poe
 pio run -e lolin-s2-mini
 pio run -e esp32-uno-shield
@@ -63,7 +65,13 @@ Build all environments after any change to shared code. The first configure
 after switching envs can fail once (the shared `dependencies.lock` changes
 target); just run it again.
 
+On this fork's Windows machine `pio` isn't on PATH: use
+`~/.platformio/penv/Scripts/pio.exe` (installed by the VS Code extension).
+
 ## Testing on hardware
+
+The setup below is the upstream author's Mac. On this fork, ask the user
+before flashing.
 
 The user lets agents flash and test. Typical setup on the user's Mac:
 
