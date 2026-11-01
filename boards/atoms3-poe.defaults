@@ -1,4 +1,4 @@
-# M5Stack AtomS3 (ESP32-S3, 8 MB flash, no PSRAM) on the AtomPoE base (W5500).
+# M5Stack AtomS3 Lite (ESP32-S3, 8 MB flash, no PSRAM) on the AtomPoE base (W5500).
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
@@ -14,3 +14,6 @@ CONFIG_BRIDGE_PIN_INT=-1
 CONFIG_BRIDGE_PIN_RST=-1
 
 CONFIG_BRIDGE_ETH_AUTONEGOTIATE=y
+
+# The button on top: GPIO41, not yet verified on hardware.
+CONFIG_BRIDGE_PIN_WPS_BUTTON=41

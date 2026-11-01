@@ -6,15 +6,18 @@
 > [!NOTE]
 > **Changes from the original.** This is a fork of
 > [jeroenvermeulen/wifi-bridge](https://github.com/jeroenvermeulen/wifi-bridge), used to put a
-> wired receipt printer on WiFi with an M5Stack AtomS3 on an AtomPoE base. Sections that differ
+> wired receipt printer on WiFi with an M5Stack AtomS3 Lite on an AtomPoE base. Sections that differ
 > from the original are marked **[fork]**.
 >
 > - **New board `atoms3-poe`**, now the default environment instead of `esp32-s3-poe`
 >   ([boards/atoms3-poe.defaults](boards/atoms3-poe.defaults),
->   [AtomS3 notes](#m5stack-atoms3--atompoe-notes)).
+>   [AtomS3 Lite notes](#m5stack-atoms3-lite--atompoe-notes)).
 > - **No idle disconnect**: the original left WiFi after the wired device had been silent for
 >   15 minutes. This fork only leaves when the Ethernet link is down, because a receipt printer
 >   is silent until a job arrives ([How it works](#how-it-works)).
+> - **WPS**: the WiFi network can be set by holding the board's button and pressing WPS on the
+>   router, instead of compiling the password in. `wifi_credentials.h` still works
+>   ([Setup](#setup), `CONFIG_BRIDGE_PIN_WPS_BUTTON`).
 > - **Windows setup notes**: where `pio` and Python are when installed by the VS Code extension.
 > - **`.vscode/` is no longer tracked**: PlatformIO generates it with local paths.
 >
@@ -28,7 +31,7 @@ Supported boards, one PlatformIO environment each:
 
 | Environment | Board | Hardware docs |
 |---|---|---|
-| `atoms3-poe` (default) **[fork]** | M5Stack AtomS3 on an AtomPoE base (W5500) | [AtomS3](https://docs.m5stack.com/en/core/AtomS3), [notes below](#m5stack-atoms3--atompoe-notes) |
+| `atoms3-poe` (default) **[fork]** | M5Stack AtomS3 Lite on an AtomPoE base (W5500) | [AtomS3 Lite](https://docs.m5stack.com/en/core/AtomS3-Lite), [notes below](#m5stack-atoms3-lite--atompoe-notes) |
 | `esp32-s3-poe` | AliExpress "ESP32-S3 PoE W5500 N16R8" development board | [esp32-s3-poe-w5500-n16r8-dev-board](https://github.com/jeroenvermeulen/esp32-s3-poe-w5500-n16r8-dev-board) |
 | `lolin-s2-mini` | WEMOS LOLIN S2 Mini wired to a W5500 module (USR-ES1) | [esp32-w5500](https://github.com/jeroenvermeulen/esp32-w5500) |
 | `esp32-uno-shield` | ESP32-WROOM-32U wired to an Arduino Uno Ethernet Shield (W5100) | [below](#esp32--arduino-ethernet-shield-notes) |
@@ -95,8 +98,18 @@ On `esp32-uno-shield` (WiFi at -43 dBm) the W5100's SPI is the limit: it moves o
    **[fork]** On Windows the VS Code extension doesn't put `pio` on PATH: use
    `~/.platformio/penv/Scripts/pio.exe` (and `~/.platformio/penv/Scripts/python.exe` for the
    tools below).
-2. Copy `src/wifi_credentials.example.h` to `src/wifi_credentials.h` and fill in your network.
-   That file is gitignored.
+2. Set the WiFi network, one of:
+   - **Password**: copy `src/wifi_credentials.example.h` to `src/wifi_credentials.h` and fill in
+     your network. That file is gitignored. The password is compiled into the firmware.
+   - **[fork] WPS** (boards with a WPS button, currently `atoms3-poe`): skip the file. After
+     flashing, hold the button 3 s and press WPS on the router within 2 minutes. The bridge
+     stores the network in its flash (NVS) and keeps it across reboots and reflashes; repeat to
+     change networks. The router must have WPS push-button enabled, which WPA3-only networks
+     don't support.
+
+   A network set by WPS takes precedence over `wifi_credentials.h`. To go back to the file, erase
+   the flash before uploading: `pio run -e <environment> -t erase`. Either way, the network is
+   readable from the board's flash by anyone with a USB cable (no flash encryption).
 3. Connect the board and flash it with its environment:
    ```
    pio run -e atoms3-poe -t upload
@@ -105,9 +118,9 @@ On `esp32-uno-shield` (WiFi at -43 dBm) the W5100's SPI is the limit: it moves o
    pio run -e esp32-uno-shield -t upload
    pio run -e esp32-w5500 -t upload
    ```
-   - **[fork]** AtomS3: if the upload doesn't start, hold the reset button for ~2 s until the green LED
+   - **[fork]** AtomS3 Lite: if the upload doesn't start, hold the reset button for ~2 s until the green LED
      lights (download mode). A wired device without PoE doesn't power the AtomPoE base: power
-     the AtomS3 over USB-C, or put a PoE injector between the device and the base.
+     the AtomS3 Lite over USB-C, or put a PoE injector between the device and the base.
    - ESP32-S3 PoE board: use the **ESP-USB** port with a **USB-A to USB-C** cable (USB-C to
      USB-C gives no power on this board), and switch it on.
    - LOLIN S2 Mini: the first time, put it in download mode (hold **0**, press **RST**, release
@@ -135,6 +148,7 @@ top of [sdkconfig.defaults](sdkconfig.defaults). The bridge's own options are de
 | `CONFIG_BRIDGE_ETH_SPEED_10M` / `_100M` | Forced speed. |
 | `CONFIG_BRIDGE_ETH_DUPLEX_HALF` / `_FULL` | Forced duplex. Must match the wired device: an autonegotiating device falls back to half duplex against a forced link. The Mac's USB adapter did, although macOS showed full duplex: forced full lost ~80% of the frames to it under two-way traffic, while single transfers looked fine. Forced half works, but sends often wait out the Mac's traffic (11% ping loss under load). Prefer autonegotiation. |
 | `CONFIG_BRIDGE_WIFI_MAX_TX_POWER` | In 0.25 dBm units, `0` for the chip default. |
+| `CONFIG_BRIDGE_PIN_WPS_BUTTON` | **[fork]** WPS button, active low; `-1` for none. With a button, `wifi_credentials.h` is optional. |
 
 ESP-IDF only applies defaults to a new configuration, so after editing a defaults file delete
 `sdkconfig.<environment>` (or change the option with `pio run -e <environment> -t menuconfig`).
@@ -142,10 +156,12 @@ ESP-IDF only applies defaults to a new configuration, so after editing a default
 To add a board, copy one of the files in [boards/](boards/) and add an environment to
 [platformio.ini](platformio.ini) that points `board_build.cmake_extra_args` at it.
 
-### M5Stack AtomS3 + AtomPoE notes
+### M5Stack AtomS3 Lite + AtomPoE notes
 
-**[fork]** This whole section is new. The AtomS3 is an ESP32-S3 with 8 MB flash and no PSRAM. Its console is the chip's built-in
-USB-Serial/JTAG on the USB-C port (a COM port on Windows).
+**[fork]** This whole section is new. The AtomS3 Lite is an ESP32-S3 with 8 MB flash and no
+PSRAM. Its console is the chip's built-in USB-Serial/JTAG on the USB-C port (a COM port on
+Windows). The AtomS3 (with screen) has the same chip, pinout and button GPIO, so it should work
+too (untested).
 
 | W5500 | SCLK | MOSI | MISO | CS | RST | INT |
 |---|---|---|---|---|---|---|
@@ -157,6 +173,8 @@ USB-Serial/JTAG on the USB-C port (a COM port on Windows).
 - **No INT or RST**: the bridge polls the W5500 every 1 ms, and can't reset it.
 - **SPI runs at 20 MHz**: these aren't the IO_MUX pins of SPI2, which limits the clock to 26 MHz.
 - The link autonegotiates.
+- **The button on top is the WPS button** (GPIO41, not yet verified on hardware).
+  Hold it 3 s; the log shows "WPS: press the WPS button on the router".
 
 ### LOLIN S2 Mini notes
 

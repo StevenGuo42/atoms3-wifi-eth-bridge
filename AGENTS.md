@@ -24,7 +24,7 @@ address (MAC cloning) and copies raw Ethernet frames between a W5500 or W5100
 | `boards/<env>.defaults` | Per-board sdkconfig fragment: pins, SPI clock, link mode, TX power, chip options |
 | `sdkconfig.defaults` | Settings shared by all boards (WiFi buffer counts etc.) |
 | `platformio.ini` | One environment per board; each points `board_build.cmake_extra_args` at its defaults file |
-| `src/wifi_credentials.h` | Gitignored; copy from `wifi_credentials.example.h`. Never commit real credentials |
+| `src/wifi_credentials.h` | Gitignored; copy from `wifi_credentials.example.h`. Never commit real credentials. Optional on boards with `CONFIG_BRIDGE_PIN_WPS_BUTTON`: a network set by WPS is stored in NVS (namespace `bridge`) and takes precedence |
 | `tools/` | `serial_log.py` (log reader that doesn't reset the board), `bridge_test.sh` (short traffic test), `stress_test.sh` (16x5 MB each way with the log and frame counters), `w5500-probe` (finds W5500 GPIOs) |
 
 Generated, all gitignored: `sdkconfig.<env>`, `managed_components/`,
@@ -34,7 +34,7 @@ Generated, all gitignored: `sdkconfig.<env>`, `managed_components/`,
 
 | Env | Hardware | Docs |
 |-----|----------|------|
-| `atoms3-poe` (default) | M5Stack AtomS3 + AtomPoE base (W5500; INT/RST not connected). This fork's board: bridges a receipt printer, on Windows | Pins from https://github.com/espressif/arduino-esp32/issues/9246, not yet verified on hardware |
+| `atoms3-poe` (default) | M5Stack AtomS3 Lite + AtomPoE base (W5500; INT/RST not connected; WPS button GPIO41). This fork's board: bridges a receipt printer, on Windows | Pins from https://github.com/espressif/arduino-esp32/issues/9246, not yet verified on hardware |
 | `esp32-s3-poe` | ESP32-S3 PoE W5500 N16R8 board | https://github.com/jeroenvermeulen/esp32-s3-poe-w5500-n16r8-dev-board |
 | `lolin-s2-mini` | LOLIN S2 Mini (ESP32-S2FN4R2) + USR-ES1 W5500 module on wires | https://github.com/jeroenvermeulen/esp32-w5500 |
 | `esp32-uno-shield` | ESP32-WROOM-32U + Arduino Uno Ethernet Shield (W5100) on wires | README "ESP32 + Arduino Ethernet Shield notes" |
@@ -67,6 +67,9 @@ target); just run it again.
 
 On this fork's Windows machine `pio` isn't on PATH: use
 `~/.platformio/penv/Scripts/pio.exe` (installed by the VS Code extension).
+Full builds there often hit a GCC "internal compiler error: Segmentation
+fault" in ESP-IDF's `esp_lcd_panel_rgb.c` (not our code): rerun, with
+`-j 2` if it repeats; it got through on the second or third try.
 
 ## Testing on hardware
 

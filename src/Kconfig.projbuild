@@ -68,6 +68,15 @@ menu "WiFi bridge board"
             Lights while frames come in from the Ethernet port (wired
             device -> WiFi). Active high: GPIO -> resistor -> LED -> GND.
 
+    config BRIDGE_PIN_WPS_BUTTON
+        int "WPS button GPIO (-1: none)"
+        default -1
+        help
+            Active low (pressed = GND). Hold it 3 s and press WPS on the router
+            within 2 minutes: the bridge stores the network in flash (NVS), and
+            it takes precedence over wifi_credentials.h. With a button,
+            wifi_credentials.h is optional.
+
     config BRIDGE_SPI_MHZ
         int "Ethernet chip SPI clock (MHz)"
         range 1 80

@@ -7,8 +7,11 @@
 //
 // The device MAC is learned from the frames it sends and never stored: a
 // bridge powered up without its device must not join WiFi as that device.
-// WiFi is left again when the device goes quiet or the link goes down, and
-// nothing is bridged while the port looks like it is plugged into a network.
+// WiFi is left again when the link goes down, and nothing is bridged while
+// the port looks like it is plugged into a network.
+//
+// The WiFi network comes from WPS (push button, stored in NVS) or from
+// wifi_credentials.h; a network set by WPS takes precedence.
 
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -21,11 +24,13 @@
 #include "esp_system.h"
 #include "esp_heap_caps.h"
 #include "esp_wifi.h"
+#include "esp_wps.h"
 #include "esp_private/wifi.h"
 #include "esp_eth.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 
 // Patched copy of the ESP-IDF W5500 MAC driver, see w5500/w5500_mac.c.
 esp_eth_mac_t *bridge_eth_mac_new_w5500(const eth_w5500_config_t *w5500_config, const eth_mac_config_t *mac_config);
@@ -38,8 +43,9 @@ void bridge_w5500_rx_stats(uint32_t *reads, uint32_t *frames, int64_t *spi_us, i
 
 #if __has_include("wifi_credentials.h")
 #include "wifi_credentials.h"
-#else
-#error "Copy src/wifi_credentials.example.h to src/wifi_credentials.h and fill in your network"
+#endif
+#if !defined(BRIDGE_WIFI_SSID) && CONFIG_BRIDGE_PIN_WPS_BUTTON < 0
+#error "Copy src/wifi_credentials.example.h to src/wifi_credentials.h and fill in your network (this board has no WPS button)"
 #endif
 
 // Board settings (Ethernet chip, pins, SPI clock, link mode) come from
@@ -102,6 +108,11 @@ void bridge_w5500_rx_stats(uint32_t *reads, uint32_t *frames, int64_t *spi_us, i
 #define ROAM_RSSI (-75)
 #define ROAM_GAIN_DB 10
 #define ROAM_CHECK_STATS 6
+// WPS starts when the button is held this long, so a bump or a short press
+// doesn't take the bridge off WiFi.
+#define WPS_HOLD_MS 3000
+#define WPS_WAIT_MS (150 * 1000)  // the router's push-button window is 2 minutes
+#define NVS_NAMESPACE "bridge"
 
 static const char *TAG = "bridge";
 
@@ -123,6 +134,11 @@ static uint8_t s_candidate_mac[6];  // newly seen MAC waiting for ctrl task
 static int64_t s_clone_last_seen_us;
 static int64_t s_lan_seen_us;       // last time the LAN guard tripped, 0 = never
 static int64_t s_eth_down_us;       // when the Ethernet link went down
+
+static wifi_config_t s_wifi_cfg;    // station config; ssid empty = no network set yet
+static wifi_config_t s_wps_cfg;     // network received by WPS
+static volatile bool s_wps_active, s_wps_requested;
+static volatile int32_t s_wps_result;  // WIFI_EVENT_STA_WPS_ER_* when WPS ended, 0 while running
 
 static struct {
     uint32_t eth2wifi, wifi2eth, eth2wifi_qfull, eth2wifi_drop, eth2wifi_badsum, wifi2eth_qfull, wifi2eth_txerr, echo, foreign_src;
@@ -381,6 +397,20 @@ static void leds_init(void)
     ESP_ERROR_CHECK(esp_timer_start_periodic(timer, LED_TICK_MS * 1000));
 }
 
+// Asks ctrl_task to run WPS once per press held WPS_HOLD_MS. Active low.
+static void button_task(void *arg)
+{
+    gpio_config_t io = {.pin_bit_mask = pin_bit(CONFIG_BRIDGE_PIN_WPS_BUTTON), .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE};
+    ESP_ERROR_CHECK(gpio_config(&io));
+    for (int held_ms = 0;; vTaskDelay(pdMS_TO_TICKS(50))) {
+        held_ms = gpio_get_level(CONFIG_BRIDGE_PIN_WPS_BUTTON) ? 0 : held_ms + 50;
+        if (held_ms == WPS_HOLD_MS) {
+            s_wps_requested = true;
+            xTaskNotifyGive(s_ctrl_task);
+        }
+    }
+}
+
 // ---------------------------------------------------------------- events
 
 static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -389,12 +419,30 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     case WIFI_EVENT_STA_START:
         esp_wifi_set_ps(WIFI_PS_NONE);
         if (CONFIG_BRIDGE_WIFI_MAX_TX_POWER) esp_wifi_set_max_tx_power(CONFIG_BRIDGE_WIFI_MAX_TX_POWER);
-        esp_wifi_connect();
+        if (!s_wps_active) esp_wifi_connect();
         break;
     case WIFI_EVENT_STA_CONNECTED:
+        if (s_wps_active) break;  // WPS associates to exchange the credentials: nothing to bridge
         esp_wifi_internal_reg_rxcb(WIFI_IF_STA, wifi_rx);
         s_wifi_up = true;
-        ESP_LOGI(TAG, "WiFi connected to \"%s\" as " MACSTR, BRIDGE_WIFI_SSID, MAC2STR(s_clone_mac));
+        ESP_LOGI(TAG, "WiFi connected to \"%.32s\" as " MACSTR, (char *)s_wifi_cfg.sta.ssid, MAC2STR(s_clone_mac));
+        break;
+    case WIFI_EVENT_STA_WPS_ER_SUCCESS: {
+        wifi_event_sta_wps_er_success_t *e = data;
+        memset(&s_wps_cfg, 0, sizeof(s_wps_cfg));
+        if (e && e->ap_cred_cnt) {
+            memcpy(s_wps_cfg.sta.ssid, e->ap_cred[0].ssid, sizeof(s_wps_cfg.sta.ssid));
+            memcpy(s_wps_cfg.sta.password, e->ap_cred[0].passphrase, sizeof(s_wps_cfg.sta.password));
+        } else {
+            esp_wifi_get_config(WIFI_IF_STA, &s_wps_cfg);  // one network: WPS has set it as the station config
+        }
+        s_wps_result = id;
+        break;
+    }
+    case WIFI_EVENT_STA_WPS_ER_FAILED:
+    case WIFI_EVENT_STA_WPS_ER_TIMEOUT:
+    case WIFI_EVENT_STA_WPS_ER_PBC_OVERLAP:
+        s_wps_result = id;
         break;
     case WIFI_EVENT_STA_DISCONNECTED: {
         wifi_event_sta_disconnected_t *d = data;
@@ -458,6 +506,86 @@ static void wifi_leave(void)
     esp_wifi_stop();
 }
 
+// Loads the network stored by WPS, else the one in wifi_credentials.h, into
+// s_wifi_cfg. Returns false if there is neither.
+static bool creds_load(void)
+{
+    nvs_handle_t h;
+    size_t ssid_len = sizeof(s_wifi_cfg.sta.ssid), pass_len = sizeof(s_wifi_cfg.sta.password);
+    bool ok = nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK;
+    if (ok) {
+        ok = nvs_get_blob(h, "ssid", s_wifi_cfg.sta.ssid, &ssid_len) == ESP_OK &&
+             nvs_get_blob(h, "pass", s_wifi_cfg.sta.password, &pass_len) == ESP_OK;
+        nvs_close(h);
+    }
+    if (ok) {
+        ESP_LOGI(TAG, "WiFi network \"%.32s\" (set by WPS)", (char *)s_wifi_cfg.sta.ssid);
+        return true;
+    }
+    memset(s_wifi_cfg.sta.ssid, 0, sizeof(s_wifi_cfg.sta.ssid));
+    memset(s_wifi_cfg.sta.password, 0, sizeof(s_wifi_cfg.sta.password));
+#ifdef BRIDGE_WIFI_SSID
+    strlcpy((char *)s_wifi_cfg.sta.ssid, BRIDGE_WIFI_SSID, sizeof(s_wifi_cfg.sta.ssid));
+    strlcpy((char *)s_wifi_cfg.sta.password, BRIDGE_WIFI_PASSWORD, sizeof(s_wifi_cfg.sta.password));
+    ESP_LOGI(TAG, "WiFi network \"%.32s\" (from wifi_credentials.h)", (char *)s_wifi_cfg.sta.ssid);
+    return true;
+#else
+    ESP_LOGW(TAG, "No WiFi network set: hold the button %d s, then press WPS on the router", WPS_HOLD_MS / 1000);
+    return false;
+#endif
+}
+
+static esp_err_t creds_save(const wifi_config_t *cfg)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_blob(h, "ssid", cfg->sta.ssid, sizeof(cfg->sta.ssid));
+    if (err == ESP_OK) err = nvs_set_blob(h, "pass", cfg->sta.password, sizeof(cfg->sta.password));
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
+
+// Gets the network from the router by WPS push button and stores it. Runs in
+// ctrl_task, so no MAC is cloned meanwhile. Afterwards the bridge rejoins
+// with the device it had.
+static void wps_run(void)
+{
+    uint8_t mac[6], own[6];
+    portENTER_CRITICAL(&s_mac_lock);
+    bool had_mac = s_have_mac;
+    memcpy(mac, s_clone_mac, 6);
+    portEXIT_CRITICAL(&s_mac_lock);
+    wifi_leave();
+
+    ESP_LOGW(TAG, "WPS: press the WPS button on the router within 2 minutes");
+    s_wps_result = 0;
+    s_wps_active = true;
+    esp_read_mac(own, ESP_MAC_WIFI_STA);  // enroll as the ESP itself, not as the wired device
+    esp_wifi_set_mac(WIFI_IF_STA, own);
+    esp_wps_config_t cfg = WPS_CONFIG_INIT_DEFAULT(WPS_TYPE_PBC);
+    bool started = esp_wifi_start() == ESP_OK && esp_wifi_wps_enable(&cfg) == ESP_OK && esp_wifi_wps_start(0) == ESP_OK;
+    for (int ms = 0; started && !s_wps_result && ms < WPS_WAIT_MS; ms += 100) vTaskDelay(pdMS_TO_TICKS(100));
+    esp_wifi_wps_disable();
+    esp_wifi_stop();
+    s_wps_active = false;
+
+    if (s_wps_result == WIFI_EVENT_STA_WPS_ER_SUCCESS && s_wps_cfg.sta.ssid[0]) {
+        esp_err_t err = creds_save(&s_wps_cfg);
+        memcpy(s_wifi_cfg.sta.ssid, s_wps_cfg.sta.ssid, sizeof(s_wifi_cfg.sta.ssid));
+        memcpy(s_wifi_cfg.sta.password, s_wps_cfg.sta.password, sizeof(s_wifi_cfg.sta.password));
+        if (err == ESP_OK) ESP_LOGI(TAG, "WPS: got network \"%.32s\"", (char *)s_wifi_cfg.sta.ssid);
+        else ESP_LOGE(TAG, "WPS: got network \"%.32s\", but storing it failed (%s)", (char *)s_wifi_cfg.sta.ssid, esp_err_to_name(err));
+    } else {
+        ESP_LOGE(TAG, "WPS failed: %s", !started ? "couldn't start"
+                 : s_wps_result == WIFI_EVENT_STA_WPS_ER_PBC_OVERLAP ? "more than one router in WPS mode"
+                 : s_wps_result == WIFI_EVENT_STA_WPS_ER_FAILED ? "rejected" : "timed out");
+    }
+    esp_wifi_set_config(WIFI_IF_STA, &s_wifi_cfg);  // WPS may have replaced it
+    if (had_mac && s_wifi_cfg.sta.ssid[0]) wifi_start_with_mac(mac);
+}
+
 static bool lan_detected(int64_t now)
 {
     portENTER_CRITICAL(&s_mac_lock);
@@ -473,6 +601,11 @@ static void ctrl_task(void *arg)
     bool lan_logged = false;
     for (;;) {
         bool notified = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000)) > 0;
+        if (s_wps_requested) {
+            s_wps_requested = false;
+            wps_run();
+            continue;
+        }
         int64_t now = esp_timer_get_time();
 
         if (lan_detected(now)) {
@@ -504,6 +637,12 @@ static void ctrl_task(void *arg)
         bool same = s_have_mac && memcmp(mac, s_clone_mac, 6) == 0;
         portEXIT_CRITICAL(&s_mac_lock);
         if (same) continue;
+        if (!s_wifi_cfg.sta.ssid[0]) {
+            static bool logged;
+            if (!logged) ESP_LOGW(TAG, "Wired device " MACSTR " detected, but no WiFi network is set: start WPS", MAC2STR(mac));
+            logged = true;
+            continue;
+        }
 
         ESP_LOGI(TAG, "Wired device " MACSTR " detected, cloning its MAC on WiFi", MAC2STR(mac));
         wifi_start_with_mac(mac);
@@ -515,7 +654,7 @@ static void ctrl_task(void *arg)
 static void maybe_roam(const wifi_ap_record_t *cur)
 {
     static wifi_ap_record_t recs[16];
-    wifi_scan_config_t scan = {.ssid = (uint8_t *)BRIDGE_WIFI_SSID};
+    wifi_scan_config_t scan = {.ssid = s_wifi_cfg.sta.ssid};
     uint16_t n = sizeof(recs) / sizeof(recs[0]);
     if (esp_wifi_scan_start(&scan, true) != ESP_OK) return;
     if (esp_wifi_scan_get_ap_records(&n, recs) != ESP_OK) return;
@@ -664,18 +803,13 @@ static void wifi_init(void)
     ESP_ERROR_CHECK(esp_wifi_init(&init));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    wifi_config_t cfg = {
-        .sta = {
-            .ssid = BRIDGE_WIFI_SSID,
-            .password = BRIDGE_WIFI_PASSWORD,
-            .threshold.authmode = WIFI_AUTH_OPEN,
-            // The default fast scan joins the first AP found with this SSID,
-            // which on a multi-AP network can be a far one.
-            .scan_method = WIFI_ALL_CHANNEL_SCAN,
-            .sort_method = WIFI_CONNECT_AP_BY_SIGNAL,
-        },
-    };
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &cfg));
+    s_wifi_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    // The default fast scan joins the first AP found with this SSID, which on
+    // a multi-AP network can be a far one.
+    s_wifi_cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    s_wifi_cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    creds_load();
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &s_wifi_cfg));
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL));
 }
 
@@ -696,6 +830,7 @@ void app_main(void)
     xTaskCreate(eth2wifi_task, "eth2wifi", 4096, NULL, 15, NULL);
     xTaskCreate(wifi2eth_task, "wifi2eth", 4096, NULL, 15, NULL);
     xTaskCreate(stats_task, "stats", 4096, NULL, 1, NULL);
+    if (CONFIG_BRIDGE_PIN_WPS_BUTTON >= 0) xTaskCreate(button_task, "button", 2048, NULL, 5, NULL);
     leds_init();
 
     wifi_init();
