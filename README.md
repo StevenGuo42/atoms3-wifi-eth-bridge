@@ -67,8 +67,10 @@ Supported boards, one PlatformIO environment each:
 ## Performance
 
 Measured by the upstream author through a Realtek USB 2.5G adapter on a Mac, to the internet
-over WiFi (-55 to -61 dBm). **[fork]** `atoms3-poe` hasn't been measured yet; a receipt printer needs very
-little bandwidth.
+over WiFi (-55 to -61 dBm). **[fork]** `atoms3-poe` has no throughput numbers yet: a receipt
+printer needs very little bandwidth. With a receipt printer behind it (2026-11-03, WiFi at -47
+to -61 dBm), ping from a PC on the same WiFi was 5-45 ms (~20 ms average, 0% loss) and raw
+prints on port 9100 worked.
 
 | | `esp32-s3-poe` | `lolin-s2-mini` | `esp32-uno-shield` | `esp32-w5500` |
 |---|---|---|---|---|
@@ -169,8 +171,9 @@ too (untested).
 |---|---|---|---|---|---|---|
 | AtomS3 GPIO | 5 | 8 | 7 | 6 | not connected | not connected |
 
-- **The W5500 pins aren't verified on hardware yet.** They come from
-  [arduino-esp32#9246](https://github.com/espressif/arduino-esp32/issues/9246). The labels
+- **Tested on hardware** (2026-11-03) with a receipt printer: WPS, the button and LED, the
+  Ethernet link and printing all work. The W5500 pins come from
+  [arduino-esp32#9246](https://github.com/espressif/arduino-esp32/issues/9246); the labels
   printed on the AtomPoE base are for the original (ESP32) Atom, not the AtomS3.
 - **No INT or RST**: the bridge polls the W5500 every 1 ms, and can't reset it.
 - **SPI runs at 20 MHz**: these aren't the IO_MUX pins of SPI2, which limits the clock to 26 MHz.
